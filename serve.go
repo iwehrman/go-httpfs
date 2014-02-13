@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -91,9 +92,19 @@ func main() {
 			}
 
 		} else {
+			file, err := os.Open(fullPath)
+			if err != nil {
+				w.WriteHeader(500)
+				fmt.Fprintf(w, "Can't read file: %v", err)
+				return
+			}
 
+			if count, err := io.Copy(w, file); err != nil {
+				log.Printf("Only wrote %v bytes before error: %v\n", count, err)
+			} else {
+				log.Printf("Wrote %v bytes\n", count)
+			}
 		}
-
 	}
 
 	http.HandleFunc("/get", handleGet)
