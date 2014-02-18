@@ -44,6 +44,7 @@ func serveDirectory(fullPath string, w http.ResponseWriter, r *http.Request) {
 
 	header := w.Header()
 	header.Set("Content-Type", "application/json")
+	header.Set("Access-Control-Allow-Origin", "*")
 
 	encodedStats, err := json.Marshal(stats)
 	if err != nil {
@@ -159,7 +160,7 @@ func serve() {
 	http.HandleFunc("/get", handleGet)
 	http.HandleFunc("/thumb", handleThumb)
 
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(http.ListenAndServe(":9595", nil))
 }
 
 func main() {
