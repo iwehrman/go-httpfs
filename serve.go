@@ -24,10 +24,25 @@ type Stats struct {
 	IsDir bool      `json:"isDir"`
 }
 
-func serveDirectory(fullPath string, w http.ResponseWriter, r *http.Request) {
+func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Request) {
+	fileInfo, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			w.WriteHeader(http.StatusNotFound)
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if !fileInfo.IsDir() {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
 	infos, err := ioutil.ReadDir(fullPath)
 	if err != nil {
-		w.WriteHeader(500)
+		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "Can't read dir: %v", err)
 		return
 	}
@@ -37,9 +52,9 @@ func serveDirectory(fullPath string, w http.ResponseWriter, r *http.Request) {
 	for index, info := range infos {
 		stat := &Stats{Name: info.Name(), Size: info.Size(), Mtime: info.ModTime(), IsDir: info.IsDir()}
 		stats[index] = stat
-		log.Printf("Entry: %+v", stat)
-		j, _ := json.Marshal(stat)
-		log.Printf("JSON: %s", j)
+		// log.Printf("Entry: %+v", stat)
+		// j, _ := json.Marshal(stat)
+		// log.Printf("JSON: %s", j)
 	}
 
 	header := w.Header()
@@ -48,7 +63,7 @@ func serveDirectory(fullPath string, w http.ResponseWriter, r *http.Request) {
 
 	encodedStats, err := json.Marshal(stats)
 	if err != nil {
-		w.WriteHeader(500)
+		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "Can't encode stats: %v", err)
 	}
 
@@ -59,19 +74,49 @@ func serveDirectory(fullPath string, w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func serveFile(fullPath string, w http.ResponseWriter, r *http.Request) {
-	file, err := os.Open(fullPath)
-	if err != nil {
-		w.WriteHeader(500)
-		fmt.Fprintf(w, "Can't read file: %v", err)
-		return
-	}
+func serveFile(file *os.File, fileInfo os.FileInfo, w http.ResponseWriter, r *http.Request) {
+	header := w.Header()
+	header.Set("Content-Disposition", "filename="+fileInfo.Name())
 
 	if count, err := io.Copy(w, file); err != nil {
 		log.Printf("Only wrote %v bytes before error: %v\n", count, err)
 	} else {
 		log.Printf("Wrote %v bytes\n", count)
 	}
+}
+
+func serveFileAtPath(fullPath string, fileInfoPtr *os.FileInfo, w http.ResponseWriter, r *http.Request) {
+	file, err := os.Open(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Fprintf(w, "File not found: %v", err)
+			w.WriteHeader(http.StatusNotFound)
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+		return
+	}
+
+	var fileInfo os.FileInfo
+	if fileInfoPtr != nil {
+		fileInfo = *fileInfoPtr
+	} else {
+		fileInfo, err = file.Stat()
+		if err != nil {
+			file.Close()
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "Can't stat file: %v", err)
+			return
+		}
+	}
+
+	if fileInfo.IsDir() {
+		file.Close()
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	serveFile(file, fileInfo, w, r)
 }
 
 func getPathFromRequest(r *http.Request) string {
@@ -104,17 +149,17 @@ func handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fileinfo, err := file.Stat()
+	fileInfo, err := file.Stat()
 	if err != nil {
 		w.WriteHeader(500)
 		fmt.Fprintf(w, "Can't stat file: %v", err)
 		return
 	}
 
-	if fileinfo.IsDir() {
-		serveDirectory(fullPath, w, r)
+	if fileInfo.IsDir() {
+		serveDirectoryAtPath(fullPath, w, r)
 	} else {
-		serveFile(fullPath, w, r)
+		serveFile(file, fileInfo, w, r)
 	}
 }
 
@@ -122,25 +167,41 @@ func handleThumb(w http.ResponseWriter, r *http.Request) {
 	fullPath := getFullPathFromRequest(r)
 	thumbPath := getThumbPathFromRequest(r)
 
-	if _, err := os.Stat(thumbPath); err != nil {
+	if fileInfo, err := os.Stat(thumbPath); err != nil {
 		if os.IsNotExist(err) {
-			cmd := exec.Command("convert", "-thumbnail", "400x400", fullPath, thumbPath)
+			thumbDir := filepath.Dir(thumbPath)
+			if err := os.MkdirAll(thumbDir, 0755); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 
+			cmd := exec.Command("convert", "-thumbnail", "400x400", fullPath, thumbPath)
 			if err := cmd.Run(); err != nil {
-				w.WriteHeader(500)
+				w.WriteHeader(http.StatusInternalServerError)
 				log.Print("Unable to create thumbnail", err)
 				return
-			} else {
-				serveFile(thumbPath, w, r)
 			}
+
+			serveFileAtPath(thumbPath, nil, w, r)
 		} else {
-			w.WriteHeader(500)
+			w.WriteHeader(http.StatusInternalServerError)
 			log.Print("Unable to stat thumbnail", err)
 			return
 		}
+	} else {
+		serveFileAtPath(thumbPath, &fileInfo, w, r)
 	}
-	serveFile(thumbPath, w, r)
 
+}
+
+func handleReaddir(w http.ResponseWriter, r *http.Request) {
+	fullPath := getFullPathFromRequest(r)
+	serveDirectoryAtPath(fullPath, w, r)
+}
+
+func handleRead(w http.ResponseWriter, r *http.Request) {
+	fullPath := getFullPathFromRequest(r)
+	serveFileAtPath(fullPath, nil, w, r)
 }
 
 func initThumbDir() {
@@ -157,6 +218,8 @@ func initThumbDir() {
 }
 
 func serve() {
+	http.HandleFunc("/read", handleRead)
+	http.HandleFunc("/readdir", handleReaddir)
 	http.HandleFunc("/get", handleGet)
 	http.HandleFunc("/thumb", handleThumb)
 
