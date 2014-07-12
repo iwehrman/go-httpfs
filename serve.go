@@ -24,6 +24,32 @@ type Stats struct {
 	IsDir bool      `json:"isDir"`
 }
 
+func getPathFromRequest(r *http.Request) (string, bool) {
+	query := r.URL.Query()
+	path := query.Get("path")
+	isCanon := true
+
+	if len(path) == 0 || string([]rune(path)[0]) != "/" {
+		path = "/" + path
+		isCanon = false
+	}
+
+	canonPath := filepath.Clean(path)
+	isCanon = isCanon && (path == canonPath) && query.Encode() == r.URL.RawQuery
+
+	return canonPath, isCanon
+}
+
+func getFullPathFromRequest(r *http.Request) string {
+	path, _ := getPathFromRequest(r)
+	return root + path
+}
+
+func getThumbPathFromRequest(r *http.Request) string {
+	path, _ := getPathFromRequest(r)
+	return root + thumbDir + path
+}
+
 func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Request) {
 	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
@@ -77,6 +103,7 @@ func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Reques
 func serveFile(file *os.File, fileInfo os.FileInfo, w http.ResponseWriter, r *http.Request) {
 	header := w.Header()
 	header.Set("Content-Disposition", "filename="+fileInfo.Name())
+	header.Set("Access-Control-Allow-Origin", "*")
 
 	if count, err := io.Copy(w, file); err != nil {
 		log.Printf("Only wrote %v bytes before error: %v\n", count, err)
@@ -117,25 +144,6 @@ func serveFileAtPath(fullPath string, fileInfoPtr *os.FileInfo, w http.ResponseW
 	}
 
 	serveFile(file, fileInfo, w, r)
-}
-
-func getPathFromRequest(r *http.Request) string {
-	query := r.URL.Query()
-	path := query.Get("path")
-
-	if len(path) == 0 || string([]rune(path)[0]) != "/" {
-		path = "/" + path
-	}
-
-	return filepath.Clean(path)
-}
-
-func getFullPathFromRequest(r *http.Request) string {
-	return root + getPathFromRequest(r)
-}
-
-func getThumbPathFromRequest(r *http.Request) string {
-	return root + thumbDir + getPathFromRequest(r)
 }
 
 func handleGet(w http.ResponseWriter, r *http.Request) {
@@ -191,16 +199,48 @@ func handleThumb(w http.ResponseWriter, r *http.Request) {
 	} else {
 		serveFileAtPath(thumbPath, &fileInfo, w, r)
 	}
+}
 
+func redirect(canonPath string, w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+
+	log.Print("Initial path", query.Get("path"))
+
+	query.Set("path", canonPath)
+	r.URL.RawQuery = query.Encode()
+
+	log.Print("Final path", query.Get("path"))
+	urlStr := r.URL.RequestURI()
+
+	log.Print("canonPath:", canonPath)
+	log.Print("Redirecting to:", urlStr)
+
+	http.Redirect(w, r, urlStr, http.StatusMovedPermanently)
 }
 
 func handleReaddir(w http.ResponseWriter, r *http.Request) {
+	canonPath, canon := getPathFromRequest(r)
+
+	if !canon {
+		redirect(canonPath, w, r)
+		return
+	}
+
 	fullPath := getFullPathFromRequest(r)
+
 	serveDirectoryAtPath(fullPath, w, r)
 }
 
 func handleRead(w http.ResponseWriter, r *http.Request) {
+	canonPath, canon := getPathFromRequest(r)
+
+	if !canon {
+		redirect(canonPath, w, r)
+		return
+	}
+
 	fullPath := getFullPathFromRequest(r)
+
 	serveFileAtPath(fullPath, nil, w, r)
 }
 
