@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,6 +38,11 @@ func getPathFromRequest(r *http.Request) (string, bool) {
 	canonPath := filepath.Clean(path)
 	isCanon = isCanon && (path == canonPath) && query.Encode() == r.URL.RawQuery
 
+	if !isCanon {
+		query.Set("path", canonPath)
+		r.URL.RawQuery = query.Encode()
+	}
+
 	return canonPath, isCanon
 }
 
@@ -47,7 +53,97 @@ func getFullPathFromRequest(r *http.Request) string {
 
 func getThumbPathFromRequest(r *http.Request) string {
 	path, _ := getPathFromRequest(r)
+
 	return root + thumbDir + path
+}
+
+func canonicalizePath(url *url.URL) bool {
+	query := url.Query()
+	path := query.Get("path")
+	isCanon := true
+
+	if len(path) == 0 || string([]rune(path)[0]) != "/" {
+		path = "/" + path
+		isCanon = false
+	}
+
+	canonPath := filepath.Clean(path)
+	isCanon = isCanon && (path == canonPath)
+
+	if !isCanon {
+		query.Set("path", canonPath)
+	}
+
+	return isCanon
+}
+
+func canonicalizeBoolean(url *url.URL, key string) bool {
+	query := url.Query()
+	canon := true
+
+	if _, present := query[key]; present {
+		value := query.Get(key)
+		if value == "" || value == "0" {
+			query.Del(key)
+			canon = false
+		} else if value != "1" {
+			query.Set(key, "1")
+			canon = false
+		}
+	}
+
+	return canon
+}
+
+func canonicalizeRetina(url *url.URL) bool {
+	return canonicalizeBoolean(url, "retina")
+}
+
+func canonicalizePreview(url *url.URL) bool {
+	return canonicalizeBoolean(url, "preview")
+}
+
+func canonicalizeQuery(url *url.URL) bool {
+	query := url.Query()
+	newRawQuery := query.Encode()
+	isCanon := url.RawQuery == newRawQuery
+	url.RawQuery = newRawQuery
+
+	return isCanon
+}
+
+func canonicalizeReaddir(url *url.URL) bool {
+	return canonicalizePath(url)
+}
+
+func canonicalizeRead(url *url.URL) bool {
+	canon := true
+
+	canon = canonicalizePath(url) && canon
+	canon = canonicalizePreview(url) && canon
+	canon = canonicalizeRetina(url) && canon
+
+	return canon
+}
+
+func isModified(fileInfo os.FileInfo, header http.Header) bool {
+	if _, present := header["If-Modified-Since"]; present {
+		lastModified := header.Get("If-Modified-Since")
+		lmTime, err := time.Parse(time.RFC1123, lastModified)
+
+		if err != nil {
+			log.Printf("Failed to parse if-modified-since header: %s - %s", lastModified, err.Error())
+		} else if !lmTime.Before(fileInfo.ModTime()) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func setCacheHeaders(fileInfo os.FileInfo, header *http.Header) {
+	header.Set("Last-Modified", fileInfo.ModTime().Format(time.RFC1123))
+	header.Set("Cache-Control", "private, max-age=0, no-cache")
 }
 
 func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Request) {
@@ -66,6 +162,16 @@ func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if header := r.Header; !isModified(fileInfo, header) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	header := w.Header()
+	header.Set("Content-Type", "application/json")
+	header.Set("Access-Control-Allow-Origin", "*")
+	setCacheHeaders(fileInfo, &header)
+
 	infos, err := ioutil.ReadDir(fullPath)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -78,14 +184,7 @@ func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Reques
 	for index, info := range infos {
 		stat := &Stats{Name: info.Name(), Size: info.Size(), Mtime: info.ModTime(), IsDir: info.IsDir()}
 		stats[index] = stat
-		// log.Printf("Entry: %+v", stat)
-		// j, _ := json.Marshal(stat)
-		// log.Printf("JSON: %s", j)
 	}
-
-	header := w.Header()
-	header.Set("Content-Type", "application/json")
-	header.Set("Access-Control-Allow-Origin", "*")
 
 	encodedStats, err := json.Marshal(stats)
 	if err != nil {
@@ -101,9 +200,15 @@ func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Reques
 }
 
 func serveFile(file *os.File, fileInfo os.FileInfo, w http.ResponseWriter, r *http.Request) {
+	if header := r.Header; !isModified(fileInfo, header) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
 	header := w.Header()
-	header.Set("Content-Disposition", "filename="+fileInfo.Name())
+	setCacheHeaders(fileInfo, &header)
 	header.Set("Access-Control-Allow-Origin", "*")
+	header.Set("Content-Disposition", "filename="+fileInfo.Name())
 
 	if count, err := io.Copy(w, file); err != nil {
 		log.Printf("Only wrote %v bytes before error: %v\n", count, err)
@@ -146,83 +251,42 @@ func serveFileAtPath(fullPath string, fileInfoPtr *os.FileInfo, w http.ResponseW
 	serveFile(file, fileInfo, w, r)
 }
 
-func handleGet(w http.ResponseWriter, r *http.Request) {
-
-	fullPath := getFullPathFromRequest(r)
-
-	file, err := os.Open(fullPath)
-	if err != nil {
-		w.WriteHeader(404)
-		fmt.Fprintf(w, "File not found: %v", err)
-		return
-	}
-
-	fileInfo, err := file.Stat()
-	if err != nil {
-		w.WriteHeader(500)
-		fmt.Fprintf(w, "Can't stat file: %v", err)
-		return
-	}
-
-	if fileInfo.IsDir() {
-		serveDirectoryAtPath(fullPath, w, r)
-	} else {
-		serveFile(file, fileInfo, w, r)
-	}
-}
-
-func handleThumb(w http.ResponseWriter, r *http.Request) {
-	fullPath := getFullPathFromRequest(r)
+func makeThumb(r *http.Request) (string, os.FileInfo, error) {
 	thumbPath := getThumbPathFromRequest(r)
+	fileInfo, err := os.Stat(thumbPath)
 
-	if fileInfo, err := os.Stat(thumbPath); err != nil {
+	if err != nil {
 		if os.IsNotExist(err) {
 			thumbDir := filepath.Dir(thumbPath)
 			if err := os.MkdirAll(thumbDir, 0755); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
+				return thumbPath, nil, err
 			}
 
+			fullPath := getFullPathFromRequest(r)
 			cmd := exec.Command("convert", "-thumbnail", "400x400", fullPath, thumbPath)
 			if err := cmd.Run(); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
 				log.Print("Unable to create thumbnail", err)
-				return
+				return thumbPath, nil, err
 			}
-
-			serveFileAtPath(thumbPath, nil, w, r)
 		} else {
-			w.WriteHeader(http.StatusInternalServerError)
 			log.Print("Unable to stat thumbnail", err)
-			return
+			return thumbPath, nil, err
 		}
-	} else {
-		serveFileAtPath(thumbPath, &fileInfo, w, r)
 	}
+
+	return thumbPath, fileInfo, nil
 }
 
-func redirect(canonPath string, w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query()
-
-	log.Print("Initial path", query.Get("path"))
-
-	query.Set("path", canonPath)
-	r.URL.RawQuery = query.Encode()
-
-	log.Print("Final path", query.Get("path"))
+func redirect(w http.ResponseWriter, r *http.Request) {
 	urlStr := r.URL.RequestURI()
-
-	log.Print("canonPath:", canonPath)
-	log.Print("Redirecting to:", urlStr)
-
 	http.Redirect(w, r, urlStr, http.StatusMovedPermanently)
 }
 
 func handleReaddir(w http.ResponseWriter, r *http.Request) {
-	canonPath, canon := getPathFromRequest(r)
+	_, canon := getPathFromRequest(r)
 
 	if !canon {
-		redirect(canonPath, w, r)
+		redirect(w, r)
 		return
 	}
 
@@ -232,16 +296,31 @@ func handleReaddir(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleRead(w http.ResponseWriter, r *http.Request) {
-	canonPath, canon := getPathFromRequest(r)
-
+	url := r.URL
+	canon := canonicalizeRead(url)
 	if !canon {
-		redirect(canonPath, w, r)
+		redirect(w, r)
 		return
 	}
 
-	fullPath := getFullPathFromRequest(r)
+	query := url.Query()
+	var fileInfoPtr *os.FileInfo
+	var fullPath string
+	if _, preview := query["preview"]; preview {
+		thumbPath, fileInfo, err := makeThumb(r)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 
-	serveFileAtPath(fullPath, nil, w, r)
+		fullPath = thumbPath
+		fileInfoPtr = &fileInfo
+	} else {
+		fullPath = getFullPathFromRequest(r)
+		fileInfoPtr = nil
+	}
+
+	serveFileAtPath(fullPath, fileInfoPtr, w, r)
 }
 
 func initThumbDir() {
@@ -260,8 +339,6 @@ func initThumbDir() {
 func serve() {
 	http.HandleFunc("/read", handleRead)
 	http.HandleFunc("/readdir", handleReaddir)
-	http.HandleFunc("/get", handleGet)
-	http.HandleFunc("/thumb", handleThumb)
 
 	log.Fatal(http.ListenAndServe(":9595", nil))
 }
