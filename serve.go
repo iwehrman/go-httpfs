@@ -3,13 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/iwehrman/serve/convert"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 )
@@ -38,34 +38,18 @@ func hasRetina(r *http.Request) bool {
 	return present
 }
 
-func getPathFromRequest(r *http.Request) (string, bool) {
+func getPathFromRequest(r *http.Request) string {
 	query := r.URL.Query()
-	path := query.Get("path")
-	isCanon := true
-
-	if len(path) == 0 || string([]rune(path)[0]) != "/" {
-		path = "/" + path
-		isCanon = false
-	}
-
-	canonPath := filepath.Clean(path)
-	isCanon = isCanon && (path == canonPath) && query.Encode() == r.URL.RawQuery
-
-	if !isCanon {
-		query.Set("path", canonPath)
-		r.URL.RawQuery = query.Encode()
-	}
-
-	return canonPath, isCanon
+	return query.Get("path")
 }
 
 func getFullPathFromRequest(r *http.Request) string {
-	path, _ := getPathFromRequest(r)
+	path := getPathFromRequest(r)
 	return root + path
 }
 
 func getThumbPathFromRequest(r *http.Request) (string, bool) {
-	path, _ := getPathFromRequest(r)
+	path := getPathFromRequest(r)
 	thumbPath := root
 	retina := hasRetina(r)
 
@@ -76,8 +60,6 @@ func getThumbPathFromRequest(r *http.Request) (string, bool) {
 	}
 
 	thumbPath = thumbPath + path
-
-	log.Print("Thumbpath: " + thumbPath)
 
 	return thumbPath, retina
 }
@@ -292,16 +274,15 @@ func makeThumb(r *http.Request) (string, os.FileInfo, error) {
 				return thumbPath, nil, err
 			}
 
-			var dimensions string
+			var dimension int
 			if retina {
-				dimensions = "400x400"
+				dimension = 400
 			} else {
-				dimensions = "200x200"
+				dimension = 200
 			}
 
 			fullPath := getFullPathFromRequest(r)
-			cmd := exec.Command("convert", "-thumbnail", dimensions, fullPath, thumbPath)
-			if err := cmd.Run(); err != nil {
+			if err := convert.MakeThumbnail(fullPath, thumbPath, dimension); err != nil {
 				log.Print("Unable to create thumbnail", err)
 				return thumbPath, nil, err
 			}
