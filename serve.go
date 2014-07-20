@@ -15,6 +15,7 @@ import (
 )
 
 const thumbDir string = "/.thumbs"
+const retinaThumbDir string = "/.thumbs@2x"
 
 var root string
 
@@ -23,6 +24,18 @@ type Stats struct {
 	Size  int64     `json:"size"`
 	Mtime time.Time `json:"mtime"`
 	IsDir bool      `json:"isDir"`
+}
+
+func hasPreview(r *http.Request) bool {
+	query := r.URL.Query()
+	_, present := query["preview"]
+	return present
+}
+
+func hasRetina(r *http.Request) bool {
+	query := r.URL.Query()
+	_, present := query["retina"]
+	return present
 }
 
 func getPathFromRequest(r *http.Request) (string, bool) {
@@ -51,10 +64,22 @@ func getFullPathFromRequest(r *http.Request) string {
 	return root + path
 }
 
-func getThumbPathFromRequest(r *http.Request) string {
+func getThumbPathFromRequest(r *http.Request) (string, bool) {
 	path, _ := getPathFromRequest(r)
+	thumbPath := root
+	retina := hasRetina(r)
 
-	return root + thumbDir + path
+	if retina {
+		thumbPath = thumbPath + retinaThumbDir
+	} else {
+		thumbPath = thumbPath + thumbDir
+	}
+
+	thumbPath = thumbPath + path
+
+	log.Print("Thumbpath: " + thumbPath)
+
+	return thumbPath, retina
 }
 
 func canonicalizePath(query url.Values) bool {
@@ -257,7 +282,7 @@ func serveFileAtPath(fullPath string, fileInfoPtr *os.FileInfo, w http.ResponseW
 }
 
 func makeThumb(r *http.Request) (string, os.FileInfo, error) {
-	thumbPath := getThumbPathFromRequest(r)
+	thumbPath, retina := getThumbPathFromRequest(r)
 	fileInfo, err := os.Stat(thumbPath)
 
 	if err != nil {
@@ -267,8 +292,15 @@ func makeThumb(r *http.Request) (string, os.FileInfo, error) {
 				return thumbPath, nil, err
 			}
 
+			var dimensions string
+			if retina {
+				dimensions = "400x400"
+			} else {
+				dimensions = "200x200"
+			}
+
 			fullPath := getFullPathFromRequest(r)
-			cmd := exec.Command("convert", "-thumbnail", "400x400", fullPath, thumbPath)
+			cmd := exec.Command("convert", "-thumbnail", dimensions, fullPath, thumbPath)
 			if err := cmd.Run(); err != nil {
 				log.Print("Unable to create thumbnail", err)
 				return thumbPath, nil, err
@@ -309,10 +341,9 @@ func handleRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	query := url.Query()
 	var fileInfoPtr *os.FileInfo
 	var fullPath string
-	if _, preview := query["preview"]; preview {
+	if hasPreview(r) {
 		thumbPath, fileInfo, err := makeThumb(r)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -320,7 +351,12 @@ func handleRead(w http.ResponseWriter, r *http.Request) {
 		}
 
 		fullPath = thumbPath
-		fileInfoPtr = &fileInfo
+		if fileInfo == nil {
+			fileInfoPtr = nil
+		} else {
+			fileInfoPtr = &fileInfo
+		}
+
 	} else {
 		fullPath = getFullPathFromRequest(r)
 		fileInfoPtr = nil
