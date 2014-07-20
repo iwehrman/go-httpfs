@@ -57,8 +57,7 @@ func getThumbPathFromRequest(r *http.Request) string {
 	return root + thumbDir + path
 }
 
-func canonicalizePath(url *url.URL) bool {
-	query := url.Query()
+func canonicalizePath(query url.Values) bool {
 	path := query.Get("path")
 	isCanon := true
 
@@ -77,8 +76,7 @@ func canonicalizePath(url *url.URL) bool {
 	return isCanon
 }
 
-func canonicalizeBoolean(url *url.URL, key string) bool {
-	query := url.Query()
+func canonicalizeBoolean(query url.Values, key string) bool {
 	canon := true
 
 	if _, present := query[key]; present {
@@ -95,16 +93,15 @@ func canonicalizeBoolean(url *url.URL, key string) bool {
 	return canon
 }
 
-func canonicalizeRetina(url *url.URL) bool {
-	return canonicalizeBoolean(url, "retina")
+func canonicalizeRetina(query url.Values) bool {
+	return canonicalizeBoolean(query, "retina")
 }
 
-func canonicalizePreview(url *url.URL) bool {
-	return canonicalizeBoolean(url, "preview")
+func canonicalizePreview(query url.Values) bool {
+	return canonicalizeBoolean(query, "preview")
 }
 
-func canonicalizeQuery(url *url.URL) bool {
-	query := url.Query()
+func canonicalizeQuery(url *url.URL, query url.Values) bool {
 	newRawQuery := query.Encode()
 	isCanon := url.RawQuery == newRawQuery
 	url.RawQuery = newRawQuery
@@ -113,15 +110,23 @@ func canonicalizeQuery(url *url.URL) bool {
 }
 
 func canonicalizeReaddir(url *url.URL) bool {
-	return canonicalizePath(url)
+	canon := true
+	query := url.Query()
+
+	canon = canonicalizePath(query) && canon
+	canon = canonicalizeQuery(url, query) && canon
+
+	return canon
 }
 
 func canonicalizeRead(url *url.URL) bool {
 	canon := true
+	query := url.Query()
 
-	canon = canonicalizePath(url) && canon
-	canon = canonicalizePreview(url) && canon
-	canon = canonicalizeRetina(url) && canon
+	canon = canonicalizePath(query) && canon
+	canon = canonicalizePreview(query) && canon
+	canon = canonicalizeRetina(query) && canon
+	canon = canonicalizeQuery(url, query) && canon
 
 	return canon
 }
@@ -279,12 +284,13 @@ func makeThumb(r *http.Request) (string, os.FileInfo, error) {
 
 func redirect(w http.ResponseWriter, r *http.Request) {
 	urlStr := r.URL.RequestURI()
+	log.Print("Redirect:" + urlStr)
 	http.Redirect(w, r, urlStr, http.StatusMovedPermanently)
 }
 
 func handleReaddir(w http.ResponseWriter, r *http.Request) {
-	_, canon := getPathFromRequest(r)
-
+	url := r.URL
+	canon := canonicalizeReaddir(url)
 	if !canon {
 		redirect(w, r)
 		return
