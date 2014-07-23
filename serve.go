@@ -298,6 +298,10 @@ func makeThumb(r *http.Request) (string, os.FileInfo, error) {
 func redirect(w http.ResponseWriter, r *http.Request) {
 	urlStr := r.URL.RequestURI()
 	log.Print("Redirect:" + urlStr)
+
+	header := w.Header()
+	header.Set("Access-Control-Allow-Origin", "*")
+
 	http.Redirect(w, r, urlStr, http.StatusMovedPermanently)
 }
 
