@@ -21,6 +21,7 @@ var root string
 
 type Stats struct {
 	Name  string    `json:"name"`
+	Path  string    `json:"path"`
 	Size  int64     `json:"size"`
 	Mtime time.Time `json:"mtime"`
 	IsDir bool      `json:"isDir"`
@@ -189,7 +190,18 @@ func serveStatAtPath(fullPath string, w http.ResponseWriter, r *http.Request) {
 	header.Set("Access-Control-Allow-Origin", "*")
 	setCacheHeaders(fileInfo, &header)
 
-	stats := &Stats{Name: fileInfo.Name(),
+	name := fileInfo.Name()
+	path, err := filepath.Rel(root, fullPath)
+	if err != nil {
+		fmt.Fprintf(w, "Can't compute path: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	path = filepath.Join("/", path)
+	stats := &Stats{
+		Name:  name,
+		Path:  path,
 		Size:  fileInfo.Size(),
 		Mtime: fileInfo.ModTime(),
 		IsDir: fileInfo.IsDir()}
@@ -244,7 +256,22 @@ func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Reques
 	stats := make([]*Stats, len(infos))
 
 	for index, info := range infos {
-		stat := &Stats{Name: info.Name(), Size: info.Size(), Mtime: info.ModTime(), IsDir: info.IsDir()}
+		name := info.Name()
+		path, err := filepath.Rel(root, fullPath)
+		if err != nil {
+			fmt.Fprintf(w, "Can't compute path: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		path = filepath.Join("/", path, name)
+		stat := &Stats{
+			Name:  info.Name(),
+			Path:  path,
+			Size:  info.Size(),
+			Mtime: info.ModTime(),
+			IsDir: info.IsDir()}
+
 		stats[index] = stat
 	}
 
