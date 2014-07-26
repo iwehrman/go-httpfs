@@ -116,6 +116,16 @@ func canonicalizeQuery(url *url.URL, query url.Values) bool {
 	return isCanon
 }
 
+func canonicalizeStat(url *url.URL) bool {
+	canon := true
+	query := url.Query()
+
+	canon = canonicalizePath(query) && canon
+	canon = canonicalizeQuery(url, query) && canon
+
+	return canon
+}
+
 func canonicalizeReaddir(url *url.URL) bool {
 	canon := true
 	query := url.Query()
@@ -156,6 +166,46 @@ func isModified(fileInfo os.FileInfo, header http.Header) bool {
 func setCacheHeaders(fileInfo os.FileInfo, header *http.Header) {
 	header.Set("Last-Modified", fileInfo.ModTime().Format(time.RFC1123))
 	header.Set("Cache-Control", "private, max-age=0, no-cache")
+}
+
+func serveStatAtPath(fullPath string, w http.ResponseWriter, r *http.Request) {
+	fileInfo, err := os.Stat(fullPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			w.WriteHeader(http.StatusNotFound)
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+		return
+	}
+
+	if header := r.Header; !isModified(fileInfo, header) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	header := w.Header()
+	header.Set("Content-Type", "application/json")
+	header.Set("Access-Control-Allow-Origin", "*")
+	setCacheHeaders(fileInfo, &header)
+
+	stats := &Stats{Name: fileInfo.Name(),
+		Size:  fileInfo.Size(),
+		Mtime: fileInfo.ModTime(),
+		IsDir: fileInfo.IsDir()}
+
+	encodedStats, err := json.Marshal(stats)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "Can't encode stats: %v", err)
+		return
+	}
+
+	if count, err := w.Write(encodedStats); err != nil {
+		log.Printf("Only wrote %v bytes before error: %v\n", count, err)
+	} else {
+		log.Printf("Wrote %v bytes\n", count)
+	}
 }
 
 func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Request) {
@@ -202,6 +252,7 @@ func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "Can't encode stats: %v", err)
+		return
 	}
 
 	if count, err := w.Write(encodedStats); err != nil {
@@ -305,6 +356,19 @@ func redirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, urlStr, http.StatusMovedPermanently)
 }
 
+func handleStat(w http.ResponseWriter, r *http.Request) {
+	url := r.URL
+	canon := canonicalizeStat(url)
+	if !canon {
+		redirect(w, r)
+		return
+	}
+
+	fullPath := getFullPathFromRequest(r)
+
+	serveStatAtPath(fullPath, w, r)
+}
+
 func handleReaddir(w http.ResponseWriter, r *http.Request) {
 	url := r.URL
 	canon := canonicalizeReaddir(url)
@@ -364,6 +428,7 @@ func initThumbDir() {
 }
 
 func serve() {
+	http.HandleFunc("/stat", handleStat)
 	http.HandleFunc("/read", handleRead)
 	http.HandleFunc("/readdir", handleReaddir)
 
