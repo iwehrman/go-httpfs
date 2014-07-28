@@ -454,10 +454,28 @@ func initThumbDir() {
 	}
 }
 
+type requestHandler func(w http.ResponseWriter, r *http.Request)
+
+func handlerWrapper(handler requestHandler) requestHandler {
+	return func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("%s: %s\n", r.Method, r.URL.RequestURI())
+
+		if r.Method == "OPTIONS" {
+			header := w.Header()
+			header.Set("Access-Control-Allow-Origin", "*")
+			header.Set("Access-Control-Allow-Headers", "Accept-Encoding,DNT")
+			return
+		}
+
+		handler(w, r)
+		//log.Printf("%d: %s\n", w., r.URL.RequestURI())
+	}
+}
+
 func serve() {
-	http.HandleFunc("/stat", handleStat)
-	http.HandleFunc("/read", handleRead)
-	http.HandleFunc("/readdir", handleReaddir)
+	http.HandleFunc("/stat", handlerWrapper(handleStat))
+	http.HandleFunc("/read", handlerWrapper(handleRead))
+	http.HandleFunc("/readdir", handlerWrapper(handleReaddir))
 
 	log.Fatal(http.ListenAndServe(":9595", nil))
 }
