@@ -215,8 +215,6 @@ func serveStatAtPath(fullPath string, w http.ResponseWriter, r *http.Request) {
 
 	if count, err := w.Write(encodedStats); err != nil {
 		log.Printf("Only wrote %v bytes before error: %v\n", count, err)
-	} else {
-		log.Printf("Wrote %v bytes\n", count)
 	}
 }
 
@@ -284,8 +282,6 @@ func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Reques
 
 	if count, err := w.Write(encodedStats); err != nil {
 		log.Printf("Only wrote %v bytes before error: %v\n", count, err)
-	} else {
-		log.Printf("Wrote %v bytes\n", count)
 	}
 }
 
@@ -302,8 +298,6 @@ func serveFile(file *os.File, fileInfo os.FileInfo, w http.ResponseWriter, r *ht
 
 	if count, err := io.Copy(w, file); err != nil {
 		log.Printf("Only wrote %v bytes before error: %v\n", count, err)
-	} else {
-		log.Printf("Wrote %v bytes\n", count)
 	}
 }
 
@@ -458,9 +452,11 @@ type requestHandler func(w http.ResponseWriter, r *http.Request)
 
 func handlerWrapper(handler requestHandler) requestHandler {
 	return func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("%s: %s\n", r.Method, r.URL.RequestURI())
+		uri := r.URL.RequestURI()
+		method := r.Method
 
-		if r.Method == "OPTIONS" {
+		log.Printf("%s: %s\n", method, uri)
+		if method == "OPTIONS" {
 			header := w.Header()
 			header.Set("Access-Control-Allow-Origin", "*")
 			header.Set("Access-Control-Allow-Headers", "Accept-Encoding,DNT")
@@ -468,7 +464,6 @@ func handlerWrapper(handler requestHandler) requestHandler {
 		}
 
 		handler(w, r)
-		//log.Printf("%d: %s\n", w., r.URL.RequestURI())
 	}
 }
 
