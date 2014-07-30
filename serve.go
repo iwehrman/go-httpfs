@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"github.com/iwehrman/serve/convert"
 	"io"
 	"io/ioutil"
@@ -41,7 +40,13 @@ func hasRetina(r *http.Request) bool {
 
 func getPathFromRequest(r *http.Request) string {
 	query := r.URL.Query()
-	return query.Get("path")
+	path, err := url.QueryUnescape(query.Get("path"))
+
+	if err != nil {
+		log.Println("Unable to parse query: %v", path)
+	}
+
+	return path
 }
 
 func getFullPathFromRequest(r *http.Request) string {
@@ -173,9 +178,9 @@ func serveStatAtPath(fullPath string, w http.ResponseWriter, r *http.Request) {
 	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			w.WriteHeader(http.StatusNotFound)
+			http.Error(w, err.Error(), http.StatusNotFound)
 		} else {
-			w.WriteHeader(http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 		return
 	}
@@ -193,8 +198,7 @@ func serveStatAtPath(fullPath string, w http.ResponseWriter, r *http.Request) {
 	name := fileInfo.Name()
 	path, err := filepath.Rel(root, fullPath)
 	if err != nil {
-		fmt.Fprintf(w, "Can't compute path: %v", err)
-		w.WriteHeader(http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -208,8 +212,7 @@ func serveStatAtPath(fullPath string, w http.ResponseWriter, r *http.Request) {
 
 	encodedStats, err := json.Marshal(stats)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, "Can't encode stats: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -222,15 +225,15 @@ func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Reques
 	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			w.WriteHeader(http.StatusNotFound)
+			http.Error(w, err.Error(), http.StatusNotFound)
 		} else {
-			w.WriteHeader(http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 		return
 	}
 
 	if !fileInfo.IsDir() {
-		w.WriteHeader(http.StatusBadRequest)
+		http.Error(w, "Not a directory", http.StatusBadRequest)
 		return
 	}
 
@@ -246,8 +249,7 @@ func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Reques
 
 	infos, err := ioutil.ReadDir(fullPath)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, "Can't read dir: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -257,8 +259,7 @@ func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Reques
 		name := info.Name()
 		path, err := filepath.Rel(root, fullPath)
 		if err != nil {
-			fmt.Fprintf(w, "Can't compute path: %v", err)
-			w.WriteHeader(http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -275,8 +276,7 @@ func serveDirectoryAtPath(fullPath string, w http.ResponseWriter, r *http.Reques
 
 	encodedStats, err := json.Marshal(stats)
 	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, "Can't encode stats: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -305,10 +305,9 @@ func serveFileAtPath(fullPath string, fileInfoPtr *os.FileInfo, w http.ResponseW
 	file, err := os.Open(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Fprintf(w, "File not found: %v", err)
-			w.WriteHeader(http.StatusNotFound)
+			http.Error(w, err.Error(), http.StatusNotFound)
 		} else {
-			w.WriteHeader(http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 		return
 	}
@@ -320,15 +319,14 @@ func serveFileAtPath(fullPath string, fileInfoPtr *os.FileInfo, w http.ResponseW
 		fileInfo, err = file.Stat()
 		if err != nil {
 			file.Close()
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "Can't stat file: %v", err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
 
 	if fileInfo.IsDir() {
 		file.Close()
-		w.WriteHeader(http.StatusBadRequest)
+		http.Error(w, "Not a file", http.StatusBadRequest)
 		return
 	}
 
@@ -416,7 +414,7 @@ func handleRead(w http.ResponseWriter, r *http.Request) {
 	if hasPreview(r) {
 		thumbPath, fileInfo, err := makeThumb(r)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -455,11 +453,13 @@ func handlerWrapper(handler requestHandler) requestHandler {
 		uri := r.URL.RequestURI()
 		method := r.Method
 
+		header := w.Header()
+		header.Set("Access-Control-Allow-Origin", "*")
+
 		log.Printf("%s: %s\n", method, uri)
 		if method == "OPTIONS" {
-			header := w.Header()
-			header.Set("Access-Control-Allow-Origin", "*")
 			header.Set("Access-Control-Allow-Headers", "Accept-Encoding,DNT")
+			header.Set("Access-Control-Allow-Methods", "GET,POST")
 			return
 		}
 
@@ -482,7 +482,7 @@ func main() {
 		root = _root
 	}
 
-	fmt.Println("Root:", root)
+	log.Println("Root:", root)
 
 	initThumbDir()
 
