@@ -44,7 +44,7 @@ func processQueue() {
 	cmd := exec.Command("convert", "-thumbnail", dimensions, thumbInfo.fullPath, thumbInfo.thumbPath)
 	result := cmd.Run()
 
-	for i := 0; i < thumbInfo.callers; {
+	for i := 0; i < thumbInfo.callers; i++ {
 		thumbInfo.notifier <- result
 	}
 
