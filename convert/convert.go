@@ -17,56 +17,63 @@ type thumbInfo struct {
 
 const MAX_WORKING = 4
 
-var mutex = sync.RWMutex{}
+var mutex = sync.Mutex{}
 var queue = make([]string, 0)
-var working = make(map[string]bool)
 var waiting = make(map[string]*thumbInfo)
 
-func processQueue() {
+var workTickets = make(chan bool, MAX_WORKING)
 
-	mutex.Lock()
-	log.Print("Processing queue...")
-	key := queue[0]
-	queue = queue[1:]
-	working[key] = true
-	mutex.Unlock()
-
-	mutex.RLock()
-	if len(working) < MAX_WORKING && len(queue) > 0 {
-		go processQueue()
+func produceWorkTickets() {
+	for {
+		select {
+		case workTickets <- true:
+			log.Print("Produced a work ticket")
+		default:
+			log.Print("Finished producing work tickets")
+			return
+		}
 	}
+}
+
+func acquireWorkTicket() {
+	<-workTickets
+	log.Print("Acquired a work ticket")
+	return
+}
+
+func releaseWorkTicket() {
+	workTickets <- true
+	log.Print("Returned a work ticket")
+	return
+}
+
+func processEntry(key string) {
+	log.Print("Processing entry:", key)
 
 	thumbInfo := waiting[key]
-	mutex.RUnlock()
+
+	acquireWorkTicket()
 
 	dimAsStr := strconv.Itoa(thumbInfo.dimension)
 	dimensions := dimAsStr + "x" + dimAsStr
 	cmd := exec.Command("convert", "-thumbnail", dimensions, thumbInfo.fullPath, thumbInfo.thumbPath)
 	result := cmd.Run()
 
+	releaseWorkTicket()
+
+	mutex.Lock()
 	for i := 0; i < thumbInfo.callers; i++ {
 		thumbInfo.notifier <- result
 	}
-
-	mutex.Lock()
-	delete(working, key)
-
-	if len(queue) > 0 {
-		go processQueue()
-	}
+	delete(waiting, key)
 	mutex.Unlock()
-
 }
 
 func enqueueThumbnailRequest(fullPath, thumbPath string, dimension int) <-chan error {
-
-	mutex.RLock()
-
 	var notifier chan error
-	if info, present := waiting[thumbPath]; !present {
-		mutex.RUnlock()
-		mutex.Lock()
 
+	mutex.Lock()
+	if info, present := waiting[thumbPath]; !present {
 		log.Print("Initializing: " + thumbPath)
 		notifier = make(chan error, 1)
 		waiting[thumbPath] = &thumbInfo{
@@ -77,21 +84,13 @@ func enqueueThumbnailRequest(fullPath, thumbPath string, dimension int) <-chan e
 			callers:   1,
 		}
 
-		queue = append(queue, thumbPath)
-		mutex.Unlock()
-		mutex.RLock()
+		go processEntry(thumbPath)
 	} else {
 		log.Print("Updating: " + thumbPath)
 		info.callers = info.callers + 1
 		notifier = info.notifier
 	}
-
-	log.Print("Queue length: " + strconv.Itoa(len(queue)))
-
-	if len(queue) == 1 {
-		go processQueue()
-	}
-	mutex.RUnlock()
+	mutex.Unlock()
 
 	return notifier
 }
@@ -100,4 +99,8 @@ func MakeThumbnail(fullPath, thumbPath string, dimension int) error {
 	notifier := enqueueThumbnailRequest(fullPath, thumbPath, dimension)
 	response := <-notifier
 	return response
+}
+
+func init() {
+	go produceWorkTickets()
 }
