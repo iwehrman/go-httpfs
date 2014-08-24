@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -55,17 +56,26 @@ func getFullPathFromRequest(r *http.Request) string {
 }
 
 func getThumbPathFromRequest(r *http.Request) (string, bool) {
-	path := getPathFromRequest(r)
-	thumbPath := root
 	retina := hasRetina(r)
+	path := getPathFromRequest(r)
+	ext := strings.ToLower(filepath.Ext(path))
 
-	if retina {
-		thumbPath = thumbPath + retinaThumbDir
-	} else {
-		thumbPath = thumbPath + thumbDir
+	var thumbPath string
+
+	switch ext {
+	case ".jpg", ".jpeg", ".gif", ".png", ".webp":
+		thumbPath = root
+
+		if retina {
+			thumbPath = thumbPath + retinaThumbDir
+		} else {
+			thumbPath = thumbPath + thumbDir
+		}
+
+		thumbPath = thumbPath + path
+	default:
+		thumbPath = getFullPathFromRequest(r)
 	}
-
-	thumbPath = thumbPath + path
 
 	return thumbPath, retina
 }
@@ -294,15 +304,16 @@ func serveFile(file *os.File, fileInfo os.FileInfo, w http.ResponseWriter, r *ht
 	header := w.Header()
 	setCacheHeaders(fileInfo, &header)
 	header.Set("Access-Control-Allow-Origin", "*")
-	header.Set("Content-Disposition", "filename="+fileInfo.Name())
+	header.Set("Content-Disposition", "filename=\""+fileInfo.Name()+"\"")
 
 	if count, err := io.Copy(w, file); err != nil {
-		log.Printf("Only wrote %v bytes before error: %v\n", count, err)
+		log.Printf("Only wrote %v of %v bytes before error: %v\n", count, fileInfo.Size(), err)
 	}
 }
 
 func serveFileAtPath(fullPath string, fileInfoPtr *os.FileInfo, w http.ResponseWriter, r *http.Request) {
 	file, err := os.Open(fullPath)
+	defer file.Close()
 	if err != nil {
 		if os.IsNotExist(err) {
 			http.Error(w, err.Error(), http.StatusNotFound)
@@ -318,14 +329,12 @@ func serveFileAtPath(fullPath string, fileInfoPtr *os.FileInfo, w http.ResponseW
 	} else {
 		fileInfo, err = file.Stat()
 		if err != nil {
-			file.Close()
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
 
 	if fileInfo.IsDir() {
-		file.Close()
 		http.Error(w, "Not a file", http.StatusBadRequest)
 		return
 	}

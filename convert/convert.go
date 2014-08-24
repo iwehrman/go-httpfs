@@ -18,7 +18,6 @@ type thumbInfo struct {
 const MAX_WORKING = 4
 
 var mutex = sync.Mutex{}
-var queue = make([]string, 0)
 var waiting = make(map[string]*thumbInfo)
 
 var workTickets = make(chan bool, MAX_WORKING)
@@ -29,7 +28,6 @@ func produceWorkTickets() {
 		case workTickets <- true:
 			log.Print("Produced a work ticket")
 		default:
-			log.Print("Finished producing work tickets")
 			return
 		}
 	}
@@ -37,22 +35,20 @@ func produceWorkTickets() {
 
 func acquireWorkTicket() {
 	<-workTickets
-	log.Print("Acquired a work ticket")
 	return
 }
 
 func releaseWorkTicket() {
 	workTickets <- true
-	log.Print("Returned a work ticket")
 	return
 }
 
 func processEntry(key string) {
-	log.Print("Processing entry:", key)
-
 	thumbInfo := waiting[key]
 
 	acquireWorkTicket()
+
+	log.Printf("Processing %s: %d", key, len(waiting))
 
 	dimAsStr := strconv.Itoa(thumbInfo.dimension)
 	dimensions := dimAsStr + "x" + dimAsStr
@@ -66,6 +62,7 @@ func processEntry(key string) {
 		thumbInfo.notifier <- result
 	}
 	delete(waiting, key)
+	log.Printf("Finished %s: %d", key, len(waiting))
 	mutex.Unlock()
 }
 
